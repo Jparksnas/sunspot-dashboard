@@ -100,6 +100,12 @@ def _flatten_scalars(d, depth=0):
     return out
 
 
+def listing_url(pairs):
+    """매물 상세 페이지 주소: /product/view/<상품번호(display_number)>"""
+    num = next((str(v) for k, v in pairs if k == "display_number" and str(v).strip()), "")
+    return f"https://www.ticketbay.co.kr/product/view/{num}" if num else ""
+
+
 def parse_json_listings(obj):
     """API 응답(JSON) 어디에 있든 '가격 + 401~403 구역'을 가진 객체를 찾아냅니다."""
     found = []
@@ -145,6 +151,7 @@ def parse_json_listings(obj):
                 )[:300] or seat_text[:300],
                 "detail": seat_text,  # '통로' 확인용 전체 글자
                 "id": ident,
+                "url": listing_url(pairs),
             })
             return  # 이 객체 안쪽은 다시 보지 않음
         for v in node.values():
@@ -241,7 +248,8 @@ def fetch_listings(dump=False, skip_keys=()):
             for l in listings:
                 card = next((c for c in card_listings
                              if c["sections"] == l["sections"] and c["price"] == l["price"]), None)
-                l["url"] = card["url"] if card else ""
+                if not l.get("url"):
+                    l["url"] = card["url"] if card else ""
         else:  # API에서 못 찾으면 화면 텍스트로
             source = "화면"
             listings = card_listings
