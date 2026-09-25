@@ -282,6 +282,9 @@ def check_once(dump=False, test=False):
     # '통로' 매물을 맨 위에, 바로 들어갈 수 있는 링크와 함께 보여 줍니다.
     new.sort(key=lambda l: (not is_aisle(l), l["price"]))
     aisle = [l for l in new if is_aisle(l)]
+    for l in new:
+        log(f"  알림: {'/'.join(l['sections'])}구역 {l['price']:,}원"
+            f"{' [통로]' if is_aisle(l) else ''} {l.get('url') or '(링크 없음)'}")
 
     def line(l):
         head = f"{'🚪 [통로] ' if is_aisle(l) else '- '}{'/'.join(l['sections'])}구역 · 1장 {l['price']:,}원"
