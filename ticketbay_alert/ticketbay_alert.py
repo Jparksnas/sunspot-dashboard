@@ -37,8 +37,10 @@ BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "notified.json"
 DUMP_DIR = BASE_DIR / "dump"
 
-# 구역 번호: 앞뒤에 숫자/콤마가 붙지 않은 401~403, 뒤에 원·열·번·장이 오면 제외
-SECTION_RE = re.compile(r"(?<![\d,.])(40[1-3])(?![\d,.])(?!\s*(?:원|열|번|장))")
+# 구역 번호: "117구역"처럼 구역/블록이 붙은 숫자. 없으면 앞뒤에 숫자가 붙지 않은 3자리 숫자
+SECTION_RE = re.compile(r"(?<![\d,.])(\d{1,4})\s*(?:구역|블록|블럭)")
+BARE_NUM_RE = re.compile(r"(?<![\d,.:])(\d{3})(?![\d,.:])(?!\s*(?:원|열|번|장|매))")
+SECTION_KEY_RE = re.compile(r"block|area|zone|section|구역", re.I)
 PRICE_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{4,7})\s*원")
 PRICE_KEY_RE = re.compile(r"price|amount|가격", re.I)
 UNIT_PRICE_KEY_RE = re.compile(r"unit|per|each|one|장당", re.I)
@@ -50,9 +52,17 @@ def log(msg):
 
 
 # ---------------- 파싱 ----------------
+def find_sections(text):
+    explicit = set(SECTION_RE.findall(text))
+    if explicit:
+        return sorted(explicit)
+    # "구역" 표기가 없으면 감시 대상 구역 번호만 인정합니다(날짜·가격 숫자 오인 방지).
+    return sorted(set(BARE_NUM_RE.findall(text)) & TARGET_SECTIONS)
+
+
 def parse_text_listing(text):
     """매물 한 건의 화면 텍스트에서 구역과 1장 가격을 뽑아냅니다."""
-    sections = sorted(set(SECTION_RE.findall(text)))
+    sections = find_sections(text)
     prices = [int(p.replace(",", "")) for p in PRICE_RE.findall(text)]
     prices = [p for p in prices if p >= 1000]
     if not sections or not prices:
@@ -93,9 +103,11 @@ def parse_json_listings(obj):
                     continue
             if int(v) >= 1000:
                 prices.append((k, int(v)))
-        seat_text = " ".join(str(v) for k, v in pairs
-                             if isinstance(v, str) and not PRICE_KEY_RE.search(k))
-        sections = sorted(set(SECTION_RE.findall(seat_text)))
+        seat_text = " ".join(
+            f"{v}구역" if SECTION_KEY_RE.search(k) and str(v).isdigit() else str(v)
+            for k, v in pairs
+            if not PRICE_KEY_RE.search(k) and (isinstance(v, str) or SECTION_KEY_RE.search(k)))
+        sections = find_sections(seat_text)
         if prices and sections:
             unit = [p for k, p in prices if UNIT_PRICE_KEY_RE.search(k)]
             ident = next((str(v) for k, v in pairs if ID_KEY_RE.match(k)), "")
@@ -124,18 +136,20 @@ def listing_key(listing):
 
 
 # ---------------- 페이지 가져오기 ----------------
-# 가격(원)이 들어 있는 가장 작은 요소들의 텍스트 = 매물 카드 후보
+# 가격(원)과 구역 번호를 함께 담은 가장 작은 요소 = 매물 카드 한 장
+# (여러 카드를 감싼 목록 전체를 한 매물로 읽지 않도록 가장 안쪽 요소만 고릅니다)
 CARD_TEXT_JS = r"""
 () => {
   const priceRe = /\d[\d,]*\s*원/;
-  const all = Array.from(document.querySelectorAll('body *'));
-  const hits = all.filter(el => {
+  const hits = Array.from(document.querySelectorAll('body *')).filter(el => {
     const t = (el.innerText || '').trim();
-    return t.length > 0 && t.length < 500 && priceRe.test(t) && /\d{3}/.test(t.replace(/[\d,]+\s*원/g, ''));
+    return t.length > 0 && t.length < 800 && priceRe.test(t) && /\d{3}/.test(t.replace(/[\d,]+\s*원/g, ''));
   });
-  // 카드 안쪽 요소들도 후보가 되므로, 부모가 후보가 아닌 가장 바깥 요소만 남깁니다.
-  const set = new Set(hits);
-  return hits.filter(el => !set.has(el.parentElement)).map(el => el.innerText);
+  const hasInnerHit = new Set();
+  for (const el of hits) {
+    for (let p = el.parentElement; p; p = p.parentElement) hasInnerHit.add(p);
+  }
+  return hits.filter(el => !hasInnerHit.has(el)).map(el => el.innerText);
 }
 """
 
@@ -218,26 +232,29 @@ def save_state(keys):
     STATE_FILE.write_text(json.dumps(sorted(keys)))
 
 
-def check_once(dump=False):
+def check_once(dump=False, test=False):
     listings, source, body_text = fetch_listings(dump=dump)
     matches = [l for l in listings if is_match(l)]
     log(f"매물 후보 {len(listings)}건({source}), 조건 충족 {len(matches)}건")
     if not listings and "로그인" in body_text:
         log("경고: 페이지에 '로그인' 문구가 보입니다. 로그인해야 목록이 보이는지 --dump로 확인해 주세요.")
 
-    notified = load_state()
+    notified = set() if test else load_state()
     new = [l for l in matches if listing_key(l) not in notified]
     if not new:
         return
     lines = [f"- {'/'.join(l['sections'])}구역 · 1장 {l['price']:,}원\n  {l['text'][:200]}" for l in new]
     body = (
-        "10/3(토) 14:00 외야 그린석 4연석 조건에 맞는 매물이 올라왔습니다.\n"
+        ("[테스트 실행] " if test else "")
+        + "10/3(토) 14:00 4연석 조건에 맞는 매물이 올라왔습니다.\n"
         f"(구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하)\n\n"
         + "\n".join(lines)
         + f"\n\n바로가기: {TARGET_URL}\n"
     )
-    send_gmail(f"[티켓베이] 조건 매물 {len(new)}건 - 10/3 외야 그린석 4연석", body)
-    save_state(notified | {listing_key(l) for l in new})
+    prefix = "[티켓베이 테스트]" if test else "[티켓베이]"
+    send_gmail(f"{prefix} 조건 매물 {len(new)}건 - 10/3 4연석", body)
+    if not test:
+        save_state(notified | {listing_key(l) for l in new})
 
 
 def main():
@@ -246,12 +263,26 @@ def main():
     ap.add_argument("--once", action="store_true", help="한 번만 확인하고 종료")
     ap.add_argument("--dump", action="store_true", help="페이지/응답을 dump/ 폴더에 저장(디버그)")
     ap.add_argument("--max-minutes", type=float, help="이 시간(분)이 지나면 종료 (GitHub Actions용)")
+    ap.add_argument("--sections", help="감시 구역(쉼표로 구분). 지정하면 테스트 실행: 알림 기록을 남기지 않음")
+    ap.add_argument("--max-price", type=int, help="1장 최대 가격. 지정하면 테스트 실행")
+    ap.add_argument("--url", help="확인할 티켓베이 목록 주소. 지정하면 테스트 실행")
     ap.add_argument("--test-email", action="store_true", help="테스트 메일만 보내고 종료")
     args = ap.parse_args()
 
     for var in ("GMAIL_ADDRESS", "GMAIL_APP_PASSWORD"):
         if not os.environ.get(var):
             sys.exit(f"환경변수 {var} 가 설정되지 않았습니다. README를 참고하세요.")
+
+    global TARGET_SECTIONS, MAX_PRICE, TARGET_URL
+    test = bool(args.sections or args.max_price or args.url)
+    if args.sections:
+        TARGET_SECTIONS = {x.strip() for x in args.sections.split(",") if x.strip()}
+    if args.max_price:
+        MAX_PRICE = args.max_price
+    if args.url:
+        TARGET_URL = args.url
+    log(f"조건: 구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하"
+        + (" (테스트 실행)" if test else ""))
 
     if args.test_email:
         send_gmail("[티켓베이 알림] 테스트 메일", "알림 설정이 정상입니다.\n" + TARGET_URL)
@@ -263,7 +294,7 @@ def main():
             log("경기 시작 시간이 지나 종료합니다.")
             return
         try:
-            check_once(dump=args.dump)
+            check_once(dump=args.dump, test=test)
         except Exception as e:  # 일시적인 오류로 감시가 멈추지 않도록
             log(f"오류: {e!r}")
         if args.once or (deadline and time.time() + args.interval >= deadline):

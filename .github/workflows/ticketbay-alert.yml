@@ -7,9 +7,20 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    # 아래 값을 하나라도 넣으면 "테스트 실행": 한 번만 확인하고, 알림 기록을 남기지 않습니다.
+    inputs:
+      sections:
+        description: "테스트용 구역 (예: 117). 비우면 기본 조건"
+        required: false
+      max_price:
+        description: "테스트용 1장 최대 가격 (예: 90000)"
+        required: false
+      url:
+        description: "테스트용 티켓베이 목록 주소"
+        required: false
 
 concurrency:
-  group: ticketbay-alert
+  group: ticketbay-alert-${{ (inputs.sections || inputs.max_price || inputs.url) && 'test' || 'watch' }}
   cancel-in-progress: false
 
 jobs:
@@ -32,6 +43,7 @@ jobs:
 
       # 이미 알린 매물 목록(notified.json)을 이전 실행에서 이어받습니다.
       - uses: actions/cache/restore@v4
+        if: ${{ !(inputs.sections || inputs.max_price || inputs.url) }}
         with:
           path: ticketbay_alert/notified.json
           key: ticketbay-notified-${{ github.run_id }}
@@ -42,12 +54,23 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+          TEST_SECTIONS: ${{ inputs.sections }}
+          TEST_MAX_PRICE: ${{ inputs.max_price }}
+          TEST_URL: ${{ inputs.url }}
         run: |
           [ -f ticketbay_alert/notified.json ] || echo "[]" > ticketbay_alert/notified.json
-          python ticketbay_alert/ticketbay_alert.py --max-minutes 28 --dump
+          if [ -n "$TEST_SECTIONS$TEST_MAX_PRICE$TEST_URL" ]; then
+            args=(--once --dump)
+            [ -n "$TEST_SECTIONS" ] && args+=(--sections "$TEST_SECTIONS")
+            [ -n "$TEST_MAX_PRICE" ] && args+=(--max-price "$TEST_MAX_PRICE")
+            [ -n "$TEST_URL" ] && args+=(--url "$TEST_URL")
+            python ticketbay_alert/ticketbay_alert.py "${args[@]}"
+          else
+            python ticketbay_alert/ticketbay_alert.py --max-minutes 28 --dump
+          fi
 
       - uses: actions/cache/save@v4
-        if: always()
+        if: ${{ always() && !(inputs.sections || inputs.max_price || inputs.url) }}
         with:
           path: ticketbay_alert/notified.json
           key: ticketbay-notified-${{ github.run_id }}
