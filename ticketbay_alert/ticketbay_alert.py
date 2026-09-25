@@ -18,7 +18,7 @@ import re
 import smtplib
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -30,7 +30,8 @@ TARGET_URL = os.environ.get("TICKETBAY_URL") or (
 )
 TARGET_SECTIONS = {"401", "402", "403"}
 MAX_PRICE = 20000                         # 1장 기준 최대 가격(원)
-STOP_AFTER = datetime(2026, 10, 3, 14, 0)  # 경기 시작 후에는 자동 종료
+KST = timezone(timedelta(hours=9))
+STOP_AFTER = datetime(2026, 10, 3, 14, 0, tzinfo=KST)  # 경기 시작 후에는 자동 종료
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "notified.json"
@@ -45,7 +46,7 @@ ID_KEY_RE = re.compile(r"^(id|.*_id|.*Id|.*_no|.*No|seq)$")
 
 
 def log(msg):
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+    print(f"[{datetime.now(KST):%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
 # ---------------- 파싱 ----------------
@@ -244,6 +245,7 @@ def main():
     ap.add_argument("--interval", type=int, default=60, help="확인 간격(초), 기본 60")
     ap.add_argument("--once", action="store_true", help="한 번만 확인하고 종료")
     ap.add_argument("--dump", action="store_true", help="페이지/응답을 dump/ 폴더에 저장(디버그)")
+    ap.add_argument("--max-minutes", type=float, help="이 시간(분)이 지나면 종료 (GitHub Actions용)")
     ap.add_argument("--test-email", action="store_true", help="테스트 메일만 보내고 종료")
     args = ap.parse_args()
 
@@ -255,15 +257,16 @@ def main():
         send_gmail("[티켓베이 알림] 테스트 메일", "알림 설정이 정상입니다.\n" + TARGET_URL)
         return
 
+    deadline = time.time() + args.max_minutes * 60 if args.max_minutes else None
     while True:
-        if datetime.now() >= STOP_AFTER:
+        if datetime.now(KST) >= STOP_AFTER:
             log("경기 시작 시간이 지나 종료합니다.")
             return
         try:
             check_once(dump=args.dump)
         except Exception as e:  # 일시적인 오류로 감시가 멈추지 않도록
             log(f"오류: {e!r}")
-        if args.once:
+        if args.once or (deadline and time.time() + args.interval >= deadline):
             return
         time.sleep(args.interval + random.uniform(0, args.interval * 0.3))
 
