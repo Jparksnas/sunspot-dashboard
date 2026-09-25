@@ -1,3 +1,4 @@
 dump/
-notified.json
+dump-*/
+notified*.json
 __pycache__/
