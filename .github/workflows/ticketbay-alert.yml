@@ -24,6 +24,10 @@ concurrency:
   group: ticketbay-alert-${{ (inputs.sections || inputs.max_price || inputs.url) && github.run_id || 'watch' }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write   # 다음 감시 실행을 스스로 예약하기 위해 필요
+
 jobs:
   watch:
     runs-on: ubuntu-latest
@@ -84,3 +88,14 @@ jobs:
           path: ticketbay_alert/dump/
           retention-days: 3
           if-no-files-found: ignore
+
+      # GitHub 예약 실행은 늦거나 빠질 때가 있어서, 정상적으로 끝나면 다음 감시를 직접 이어 붙입니다.
+      # (실패한 실행은 이어 붙이지 않고, 경기 시작 시간이 지나면 멈춥니다)
+      - name: 다음 감시 실행 예약
+        if: ${{ success() && !(inputs.sections || inputs.max_price || inputs.url) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(TZ=Asia/Seoul date +%Y%m%d%H%M)" -lt 202610031400 ]; then
+            gh workflow run ticketbay-alert.yml --ref "${{ github.ref_name }}"
+          fi
