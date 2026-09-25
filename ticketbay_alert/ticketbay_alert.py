@@ -180,8 +180,11 @@ CARD_TEXT_JS = r"""
   }
   // 카드가 링크로 되어 있으면 매물 상세 주소도 함께 가져옵니다.
   return hits.filter(el => !hasInnerHit.has(el)).map(el => {
+    // href="#" 같은 빈 링크는 매물 주소가 아니므로 버립니다.
     const a = el.closest('a[href]') || el.querySelector('a[href]');
-    return {text: el.innerText, url: a ? a.href : ''};
+    const h = a ? a.getAttribute('href') : '';
+    const real = h && h !== '#' && !h.startsWith('javascript:');
+    return {text: el.innerText, url: real ? a.href : ''};
   });
 }
 """
