@@ -1,0 +1,62 @@
+# 티켓베이 매물 알림을 GitHub 서버에서 자동으로 실행합니다.
+# 15분마다 예약 실행되고, 한 번 실행되면 28분 동안 1분 간격으로 확인합니다.
+# 실행이 겹치면 대기열에 들어가 끊김 없이 이어집니다.
+name: 티켓베이 매물 알림
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ticketbay-alert
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ticketbay_alert/requirements.txt
+
+      - name: 설치
+        run: |
+          pip install -r ticketbay_alert/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      # 이미 알린 매물 목록(notified.json)을 이전 실행에서 이어받습니다.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ticketbay_alert/notified.json
+          key: ticketbay-notified-${{ github.run_id }}
+          restore-keys: ticketbay-notified-
+
+      - name: 매물 확인
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+        run: |
+          [ -f ticketbay_alert/notified.json ] || echo "[]" > ticketbay_alert/notified.json
+          python ticketbay_alert/ticketbay_alert.py --max-minutes 28 --dump
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ticketbay_alert/notified.json
+          key: ticketbay-notified-${{ github.run_id }}
+
+      # 마지막으로 확인한 페이지 화면(page.png 등)을 실행 결과에서 받아볼 수 있습니다.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ticketbay-dump
+          path: ticketbay_alert/dump/
+          retention-days: 3
+          if-no-files-found: ignore
