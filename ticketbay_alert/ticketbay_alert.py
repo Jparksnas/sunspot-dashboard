@@ -130,6 +130,7 @@ def parse_json_listings(obj):
             unit = [p for k, p in prices if UNIT_PRICE_KEY_RE.search(k)]
             ident = next((str(v) for k, v in pairs if ID_KEY_RE.match(k)), "")
             found.append({
+                "raw": pairs,
                 "sections": sections,
                 "price": min(unit) if unit else min(p for _, p in prices),
                 "text": seat_text[:300],
@@ -275,6 +276,9 @@ def check_once(dump=False, test=False):
     listings, source, _ = fetch_listings(dump=dump, skip_keys=notified)
     matches = [l for l in listings if is_match(l)]
     log(f"매물 후보 {len(listings)}건({source}), 조건 충족 {len(matches)}건")
+    if test:  # 테스트 실행에서는 매물 원본 필드를 로그로 남겨 파싱을 점검합니다.
+        for l in listings[:2]:
+            log("  원본: " + json.dumps(l.get("raw") or l["text"], ensure_ascii=False)[:1500])
 
     new = [l for l in matches if listing_key(l) not in notified]
     if not new:
