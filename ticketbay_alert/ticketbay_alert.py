@@ -55,6 +55,7 @@ SECTION_KEY_RE = re.compile(r"block|area|zone|section|구역", re.I)
 PRICE_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{4,7})\s*원")
 PRICE_KEY_RE = re.compile(r"price|amount|가격", re.I)
 UNIT_PRICE_KEY_RE = re.compile(r"unit|per|each|one|장당", re.I)
+NOT_SALE_PRICE_KEY_RE = re.compile(r"list|total|original|origin|정가|face", re.I)
 ID_KEY_RE = re.compile(r"^(id|.*_id|.*Id|.*_no|.*No|seq)$")
 
 
@@ -127,13 +128,22 @@ def parse_json_listings(obj):
             if not PRICE_KEY_RE.search(k) and (isinstance(v, str) or SECTION_KEY_RE.search(k)))
         sections = find_sections(seat_text)
         if prices and sections:
-            unit = [p for k, p in prices if UNIT_PRICE_KEY_RE.search(k)]
+            # 판매가 고르기: 'price' 필드가 1장 판매가입니다(티켓베이 API 확인).
+            # 정가(list_price)·합계(total_price)는 판매가가 아니므로 제외합니다.
+            exact = [p for k, p in prices if k == "price"]
+            sale = [(k, p) for k, p in prices if not NOT_SALE_PRICE_KEY_RE.search(k)]
+            unit = exact or [p for k, p in sale if UNIT_PRICE_KEY_RE.search(k)]
             ident = next((str(v) for k, v in pairs if ID_KEY_RE.match(k)), "")
             found.append({
                 "raw": pairs,
                 "sections": sections,
-                "price": min(unit) if unit else min(p for _, p in prices),
-                "text": seat_text[:300],
+                "price": min(unit) if unit else min(p for _, p in (sale or prices)),
+                # 메일에 보여 줄 짧은 설명: 좌석명 · 등급 · 판매자 설명
+                "text": " · ".join(
+                    " ".join(str(v).split()) for k, v in pairs
+                    if k in ("name", "grade", "description") and str(v).strip()
+                )[:300] or seat_text[:300],
+                "detail": seat_text,  # '통로' 확인용 전체 글자
                 "id": ident,
             })
             return  # 이 객체 안쪽은 다시 보지 않음
@@ -279,6 +289,9 @@ def check_once(dump=False, test=False):
     if test:  # 테스트 실행에서는 매물 원본 필드를 로그로 남겨 파싱을 점검합니다.
         for l in listings[:2]:
             log("  원본: " + json.dumps(l.get("raw") or l["text"], ensure_ascii=False)[:1500])
+        for l in listings:
+            log(f"  매물: {'/'.join(l['sections'])}구역 {l['price']:,}원"
+                f"{' [통로]' if is_aisle(l) else ''} {l.get('url') or '(링크 없음)'}")
 
     new = [l for l in matches if listing_key(l) not in notified]
     if not new:
