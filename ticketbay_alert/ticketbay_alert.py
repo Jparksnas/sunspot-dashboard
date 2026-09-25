@@ -55,6 +55,7 @@ SECTION_KEY_RE = re.compile(r"block|area|zone|section|구역", re.I)
 PRICE_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{4,7})\s*원")
 PRICE_KEY_RE = re.compile(r"price|amount|가격", re.I)
 UNIT_PRICE_KEY_RE = re.compile(r"unit|per|each|one|장당", re.I)
+NOT_SALE_PRICE_KEY_RE = re.compile(r"list|total|original|origin|정가|face", re.I)
 ID_KEY_RE = re.compile(r"^(id|.*_id|.*Id|.*_no|.*No|seq)$")
 
 
@@ -71,7 +72,14 @@ def find_sections(text):
     return sorted(set(BARE_NUM_RE.findall(text)) & TARGET_SECTIONS)
 
 
-def parse_text_listing(text):
+AISLE_WORD = "통로"
+
+
+def is_aisle(listing):
+    return AISLE_WORD in listing["text"] + listing.get("detail", "")
+
+
+def parse_text_listing(text, url=""):
     """매물 한 건의 화면 텍스트에서 구역과 1장 가격을 뽑아냅니다."""
     sections = find_sections(text)
     prices = [int(p.replace(",", "")) for p in PRICE_RE.findall(text)]
@@ -79,7 +87,7 @@ def parse_text_listing(text):
     if not sections or not prices:
         return None
     # 1장 가격과 총액이 같이 보이는 경우가 있어 가장 작은 금액을 1장 가격으로 봅니다.
-    return {"sections": sections, "price": min(prices), "text": " ".join(text.split())}
+    return {"sections": sections, "price": min(prices), "text": " ".join(text.split()), "url": url}
 
 
 def _flatten_scalars(d, depth=0):
@@ -120,12 +128,22 @@ def parse_json_listings(obj):
             if not PRICE_KEY_RE.search(k) and (isinstance(v, str) or SECTION_KEY_RE.search(k)))
         sections = find_sections(seat_text)
         if prices and sections:
-            unit = [p for k, p in prices if UNIT_PRICE_KEY_RE.search(k)]
+            # 판매가 고르기: 'price' 필드가 1장 판매가입니다(티켓베이 API 확인).
+            # 정가(list_price)·합계(total_price)는 판매가가 아니므로 제외합니다.
+            exact = [p for k, p in prices if k == "price"]
+            sale = [(k, p) for k, p in prices if not NOT_SALE_PRICE_KEY_RE.search(k)]
+            unit = exact or [p for k, p in sale if UNIT_PRICE_KEY_RE.search(k)]
             ident = next((str(v) for k, v in pairs if ID_KEY_RE.match(k)), "")
             found.append({
+                "raw": pairs,
                 "sections": sections,
-                "price": min(unit) if unit else min(p for _, p in prices),
-                "text": seat_text[:300],
+                "price": min(unit) if unit else min(p for _, p in (sale or prices)),
+                # 메일에 보여 줄 짧은 설명: 좌석명 · 등급 · 판매자 설명
+                "text": " · ".join(
+                    " ".join(str(v).split()) for k, v in pairs
+                    if k in ("name", "grade", "description") and str(v).strip()
+                )[:300] or seat_text[:300],
+                "detail": seat_text,  # '통로' 확인용 전체 글자
                 "id": ident,
             })
             return  # 이 객체 안쪽은 다시 보지 않음
@@ -160,12 +178,19 @@ CARD_TEXT_JS = r"""
   for (const el of hits) {
     for (let p = el.parentElement; p; p = p.parentElement) hasInnerHit.add(p);
   }
-  return hits.filter(el => !hasInnerHit.has(el)).map(el => el.innerText);
+  // 카드가 링크로 되어 있으면 매물 상세 주소도 함께 가져옵니다.
+  return hits.filter(el => !hasInnerHit.has(el)).map(el => {
+    // href="#" 같은 빈 링크는 매물 주소가 아니므로 버립니다.
+    const a = el.closest('a[href]') || el.querySelector('a[href]');
+    const h = a ? a.getAttribute('href') : '';
+    const real = h && h !== '#' && !h.startsWith('javascript:');
+    return {text: el.innerText, url: real ? a.href : ''};
+  });
 }
 """
 
 
-def fetch_listings(dump=False):
+def fetch_listings(dump=False, skip_keys=()):
     from playwright.sync_api import sync_playwright
 
     json_bodies = []
@@ -191,7 +216,7 @@ def fetch_listings(dump=False):
         for _ in range(5):
             page.mouse.wheel(0, 4000)
             page.wait_for_timeout(800)
-        card_texts = page.evaluate(CARD_TEXT_JS)
+        cards = page.evaluate(CARD_TEXT_JS)
         body_text = page.inner_text("body")
 
         if dump:
@@ -199,21 +224,37 @@ def fetch_listings(dump=False):
             (DUMP_DIR / "page.html").write_text(page.content(), encoding="utf-8")
             (DUMP_DIR / "page.txt").write_text(body_text, encoding="utf-8")
             (DUMP_DIR / "cards.json").write_text(
-                json.dumps(card_texts, ensure_ascii=False, indent=2), encoding="utf-8")
+                json.dumps(cards, ensure_ascii=False, indent=2), encoding="utf-8")
             (DUMP_DIR / "responses.json").write_text(
                 json.dumps([{"url": u, "body": b} for u, b in json_bodies],
                            ensure_ascii=False, indent=2), encoding="utf-8")
             page.screenshot(path=str(DUMP_DIR / "page.png"), full_page=True)
             log(f"디버그 파일 저장: {DUMP_DIR}")
-        browser.close()
 
-    listings = []
-    for _, body in json_bodies:
-        listings.extend(parse_json_listings(body))
-    source = "api"
-    if not listings:  # API에서 못 찾으면 화면 텍스트로
-        source = "화면"
-        listings = [l for l in map(parse_text_listing, card_texts) if l]
+        card_listings = [l for l in (parse_text_listing(c["text"], c["url"]) for c in cards) if l]
+        listings = []
+        for _, body in json_bodies:
+            listings.extend(parse_json_listings(body))
+        source = "api"
+        if listings:
+            # API 매물에 같은 구역·가격의 화면 카드 주소를 붙입니다.
+            for l in listings:
+                card = next((c for c in card_listings
+                             if c["sections"] == l["sections"] and c["price"] == l["price"]), None)
+                l["url"] = card["url"] if card else ""
+        else:  # API에서 못 찾으면 화면 텍스트로
+            source = "화면"
+            listings = card_listings
+
+        # 새로 알릴 매물은 상세 페이지 설명까지 읽어서 '통로' 여부를 확인합니다.
+        for l in listings:
+            if is_match(l) and l.get("url") and listing_key(l) not in skip_keys:
+                try:
+                    page.goto(l["url"], wait_until="networkidle", timeout=30000)
+                    l["detail"] = " ".join(page.inner_text("body").split())[:3000]
+                except Exception as e:
+                    log(f"상세 페이지를 열지 못했습니다: {e!r}")
+        browser.close()
     return listings, source, body_text
 
 
@@ -244,26 +285,47 @@ def save_state(keys):
 
 
 def check_once(dump=False, test=False):
-    listings, source, body_text = fetch_listings(dump=dump)
+    notified = set() if test else load_state()
+    listings, source, _ = fetch_listings(dump=dump, skip_keys=notified)
     matches = [l for l in listings if is_match(l)]
     log(f"매물 후보 {len(listings)}건({source}), 조건 충족 {len(matches)}건")
-    if not listings and "로그인" in body_text:
-        log("경고: 페이지에 '로그인' 문구가 보입니다. 로그인해야 목록이 보이는지 --dump로 확인해 주세요.")
+    if test:  # 테스트 실행에서는 매물 원본 필드를 로그로 남겨 파싱을 점검합니다.
+        for l in listings[:2]:
+            log("  원본: " + json.dumps(l.get("raw") or l["text"], ensure_ascii=False)[:1500])
+        for l in listings:
+            log(f"  매물: {'/'.join(l['sections'])}구역 {l['price']:,}원"
+                f"{' [통로]' if is_aisle(l) else ''} {l.get('url') or '(링크 없음)'}")
 
-    notified = set() if test else load_state()
     new = [l for l in matches if listing_key(l) not in notified]
     if not new:
         return
-    lines = [f"- {'/'.join(l['sections'])}구역 · 1장 {l['price']:,}원\n  {l['text'][:200]}" for l in new]
+    # '통로' 매물을 맨 위에, 바로 들어갈 수 있는 링크와 함께 보여 줍니다.
+    new.sort(key=lambda l: (not is_aisle(l), l["price"]))
+    aisle = [l for l in new if is_aisle(l)]
+    for l in new:
+        log(f"  알림: {'/'.join(l['sections'])}구역 {l['price']:,}원"
+            f"{' [통로]' if is_aisle(l) else ''} {l.get('url') or '(링크 없음)'}")
+
+    def line(l):
+        head = f"{'🚪 [통로] ' if is_aisle(l) else '- '}{'/'.join(l['sections'])}구역 · 1장 {l['price']:,}원"
+        link = f"\n  👉 {l['url']}" if l.get("url") else ""
+        return f"{head}{link}\n  {l['text'][:200]}"
+
+    top = ""
+    if aisle:
+        top = ("🚪 설명에 '통로'가 들어간 매물이 있습니다. 바로 확인하세요!\n"
+               f"👉 {aisle[0].get('url') or TARGET_URL}\n\n")
     body = (
-        ("[테스트 실행] " if test else "")
+        top
+        + ("[테스트 실행] " if test else "")
         + f"{game_label()} 외야 그린석 4연석 조건에 맞는 매물이 올라왔습니다.\n"
         f"(구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하)\n\n"
-        + "\n".join(lines)
-        + f"\n\n바로가기: {TARGET_URL}\n"
+        + "\n\n".join(line(l) for l in new)
+        + f"\n\n목록 바로가기: {TARGET_URL}\n"
     )
     prefix = "[티켓베이 테스트]" if test else "[티켓베이]"
-    send_gmail(f"{prefix} 조건 매물 {len(new)}건 - {GAME.month}/{GAME.day} 4연석", body)
+    tag = "🚪[통로] " if aisle else ""
+    send_gmail(f"{tag}{prefix} 조건 매물 {len(new)}건 - {GAME.month}/{GAME.day} 4연석", body)
     if not test:
         save_state(notified | {listing_key(l) for l in new})
 
