@@ -1,6 +1,6 @@
 # --------------------------------------------
 # 티켓베이 매물 알림
-# 10/3(토) 14:00 LG 트윈스 경기, 외야 그린석 4연석 매물 중
+# LG 트윈스 경기(기본 10/3(토) 14:00, --game 으로 변경), 외야 그린석 4연석 매물 중
 # 401 / 402 / 403 구역이면서 1장 가격이 20,000원 이하인 매물이 올라오면
 # Gmail로 알림을 보냅니다.
 #
@@ -22,20 +22,31 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
-TARGET_URL = os.environ.get("TICKETBAY_URL") or (
-    "https://www.ticketbay.co.kr/product/6549/list/0"
-    "?start_perform_date=2026-10-03+14%3A00%3A00"
-    "&seat_grade=%EC%99%B8%EC%95%BC+%EA%B7%B8%EB%A6%B0%EC%84%9D"
-    "&sale_quantity=4&is_together=YES"
-)
+KST = timezone(timedelta(hours=9))
+WEEKDAYS = "월화수목금토일"
+
+
+def game_url(game):
+    return (
+        "https://www.ticketbay.co.kr/product/6549/list/0"
+        f"?start_perform_date={game:%Y-%m-%d+%H}%3A{game:%M}%3A00"
+        "&seat_grade=%EC%99%B8%EC%95%BC+%EA%B7%B8%EB%A6%B0%EC%84%9D"
+        "&sale_quantity=4&is_together=YES"
+    )
+
+
+GAME = datetime(2026, 10, 3, 14, 0, tzinfo=KST)  # 경기 일시. 시작 후에는 자동 종료
+TARGET_URL = os.environ.get("TICKETBAY_URL") or game_url(GAME)
 TARGET_SECTIONS = {"401", "402", "403"}
 MAX_PRICE = 20000                         # 1장 기준 최대 가격(원)
-KST = timezone(timedelta(hours=9))
-STOP_AFTER = datetime(2026, 10, 3, 14, 0, tzinfo=KST)  # 경기 시작 후에는 자동 종료
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "notified.json"
 DUMP_DIR = BASE_DIR / "dump"
+
+
+def game_label():
+    return f"{GAME.month}/{GAME.day}({WEEKDAYS[GAME.weekday()]}) {GAME:%H:%M}"
 
 # 구역 번호: "117구역"처럼 구역/블록이 붙은 숫자. 없으면 앞뒤에 숫자가 붙지 않은 3자리 숫자
 SECTION_RE = re.compile(r"(?<![\d,.])(\d{1,4})\s*(?:구역|블록|블럭)")
@@ -246,13 +257,13 @@ def check_once(dump=False, test=False):
     lines = [f"- {'/'.join(l['sections'])}구역 · 1장 {l['price']:,}원\n  {l['text'][:200]}" for l in new]
     body = (
         ("[테스트 실행] " if test else "")
-        + "10/3(토) 14:00 4연석 조건에 맞는 매물이 올라왔습니다.\n"
+        + f"{game_label()} 외야 그린석 4연석 조건에 맞는 매물이 올라왔습니다.\n"
         f"(구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하)\n\n"
         + "\n".join(lines)
         + f"\n\n바로가기: {TARGET_URL}\n"
     )
     prefix = "[티켓베이 테스트]" if test else "[티켓베이]"
-    send_gmail(f"{prefix} 조건 매물 {len(new)}건 - 10/3 4연석", body)
+    send_gmail(f"{prefix} 조건 매물 {len(new)}건 - {GAME.month}/{GAME.day} 4연석", body)
     if not test:
         save_state(notified | {listing_key(l) for l in new})
 
@@ -263,6 +274,7 @@ def main():
     ap.add_argument("--once", action="store_true", help="한 번만 확인하고 종료")
     ap.add_argument("--dump", action="store_true", help="페이지/응답을 dump/ 폴더에 저장(디버그)")
     ap.add_argument("--max-minutes", type=float, help="이 시간(분)이 지나면 종료 (GitHub Actions용)")
+    ap.add_argument("--game", help='감시할 경기 일시 (예: "2026-10-05 18:30"). 기본 2026-10-03 14:00')
     ap.add_argument("--sections", help="감시 구역(쉼표로 구분). 지정하면 테스트 실행: 알림 기록을 남기지 않음")
     ap.add_argument("--max-price", type=int, help="1장 최대 가격. 지정하면 테스트 실행")
     ap.add_argument("--url", help="확인할 티켓베이 목록 주소. 지정하면 테스트 실행")
@@ -273,7 +285,13 @@ def main():
         if not os.environ.get(var):
             sys.exit(f"환경변수 {var} 가 설정되지 않았습니다. README를 참고하세요.")
 
-    global TARGET_SECTIONS, MAX_PRICE, TARGET_URL
+    global TARGET_SECTIONS, MAX_PRICE, TARGET_URL, GAME, STATE_FILE, DUMP_DIR
+    if args.game:
+        GAME = datetime.strptime(args.game, "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+        TARGET_URL = game_url(GAME)
+        # 경기마다 알림 기록과 디버그 파일을 따로 둡니다.
+        STATE_FILE = BASE_DIR / f"notified-{GAME:%m%d}.json"
+        DUMP_DIR = BASE_DIR / f"dump-{GAME:%m%d}"
     test = bool(args.sections or args.max_price or args.url)
     if args.sections:
         TARGET_SECTIONS = {x.strip() for x in args.sections.split(",") if x.strip()}
@@ -281,7 +299,7 @@ def main():
         MAX_PRICE = args.max_price
     if args.url:
         TARGET_URL = args.url
-    log(f"조건: 구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하"
+    log(f"경기: {game_label()} · 조건: 구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하"
         + (" (테스트 실행)" if test else ""))
 
     if args.test_email:
@@ -290,7 +308,7 @@ def main():
 
     deadline = time.time() + args.max_minutes * 60 if args.max_minutes else None
     while True:
-        if datetime.now(KST) >= STOP_AFTER:
+        if datetime.now(KST) >= GAME:
             log("경기 시작 시간이 지나 종료합니다.")
             return
         try:
