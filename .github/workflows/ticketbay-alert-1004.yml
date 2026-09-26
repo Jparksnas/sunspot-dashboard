@@ -1,0 +1,76 @@
+# 10/4(일) 14:00 경기용 티켓베이 매물 알림. 10/3·10/5 감시와 따로 돌아갑니다.
+# 조건은 10/3과 같습니다: 외야 그린석 4연석, 401·402·403구역, 1장 20,000원 이하.
+name: 티켓베이 매물 알림 (10/4)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ticketbay-alert-1004-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # 다음 감시 실행을 스스로 예약하기 위해 필요
+
+env:
+  GAME: "2026-10-04 14:00"
+  GAME_STOP: "202610041400"   # 위 GAME과 같은 시각 (YYYYMMDDhhmm)
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ticketbay_alert/requirements.txt
+
+      - name: 설치
+        run: |
+          pip install -r ticketbay_alert/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ticketbay_alert/notified-1004.json
+          key: ticketbay-notified-1004-${{ github.run_id }}
+          restore-keys: ticketbay-notified-1004-
+
+      - name: 매물 확인
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+        run: |
+          [ -f ticketbay_alert/notified-1004.json ] || echo "[]" > ticketbay_alert/notified-1004.json
+          python ticketbay_alert/ticketbay_alert.py --game "$GAME" --max-minutes 28 --dump
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ticketbay_alert/notified-1004.json
+          key: ticketbay-notified-1004-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ticketbay-dump-1004
+          path: ticketbay_alert/dump-1004/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: 다음 감시 실행 예약
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(TZ=Asia/Seoul date +%Y%m%d%H%M)" -lt "$GAME_STOP" ]; then
+            gh workflow run ticketbay-alert-1004.yml --ref "${{ github.ref_name }}"
+          fi
