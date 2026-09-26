@@ -1,6 +1,4 @@
 dump/
 dump-*/
 notified*.json
-session.enc
-bought.json
 __pycache__/

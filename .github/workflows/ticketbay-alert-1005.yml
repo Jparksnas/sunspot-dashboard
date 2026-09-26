@@ -43,26 +43,11 @@ jobs:
           key: ticketbay-notified-1005-${{ github.run_id }}
           restore-keys: ticketbay-notified-1005-
 
-      # 로그인 상태(암호화됨)와 오늘 주문 여부를 10/3 감시와 같이 씁니다.
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            ticketbay_alert/session.enc
-            ticketbay_alert/bought.json
-          key: ticketbay-auth-${{ github.run_id }}
-          restore-keys: ticketbay-auth-
-
       - name: 매물 확인
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
-          TICKETBAY_ID: ${{ secrets.TICKETBAY_ID }}
-          TICKETBAY_PASSWORD: ${{ secrets.TICKETBAY_PASSWORD }}
-          KAKAO_ID: ${{ secrets.KAKAO_ID }}
-          KAKAO_PASSWORD: ${{ secrets.KAKAO_PASSWORD }}
-          AUTO_BUY: ${{ vars.AUTO_BUY }}
-          AUTO_BUY_AISLE_ONLY: ${{ vars.AUTO_BUY_AISLE_ONLY }}
         run: |
           [ -f ticketbay_alert/notified-1005.json ] || echo "[]" > ticketbay_alert/notified-1005.json
           python ticketbay_alert/ticketbay_alert.py --game "$GAME" --max-minutes 28 --dump
@@ -72,20 +57,6 @@ jobs:
         with:
           path: ticketbay_alert/notified-1005.json
           key: ticketbay-notified-1005-${{ github.run_id }}
-
-      - name: 로그인 상태 저장 준비
-        if: always()
-        run: |
-          touch ticketbay_alert/session.enc
-          [ -s ticketbay_alert/bought.json ] || echo "{}" > ticketbay_alert/bought.json
-
-      - uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: |
-            ticketbay_alert/session.enc
-            ticketbay_alert/bought.json
-          key: ticketbay-auth-1005-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         if: always()

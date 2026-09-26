@@ -336,26 +336,6 @@ def check_once(dump=False, test=False):
     send_gmail(f"{tag}{prefix} 조건 매물 {len(new)}건 - {GAME.month}/{GAME.day} 4연석", body)
     if not test:
         save_state(notified | {listing_key(l) for l in new})
-        auto_order(aisle if AUTO_BUY_AISLE_ONLY else new)
-
-
-# 자동 주문: 하루 1건, 무통장 입금 일반 가상계좌 발급까지 (ticketbay_buy.py)
-# 저장소 Variables 에 AUTO_BUY=off 를 넣으면 꺼지고, AUTO_BUY_AISLE_ONLY=off 면 통로가 아니어도 주문합니다.
-AUTO_BUY = os.environ.get("AUTO_BUY", "on").lower() != "off"
-AUTO_BUY_AISLE_ONLY = os.environ.get("AUTO_BUY_AISLE_ONLY", "on").lower() != "off"
-
-
-def auto_order(candidates):
-    """새로 알린 매물 중 첫 번째(통로 우선·저가순)를 자동 주문합니다. 매물마다 한 번만 시도합니다."""
-    has_login = os.environ.get("TICKETBAY_PASSWORD") or os.environ.get("KAKAO_PASSWORD")
-    candidates = [l for l in candidates if l.get("url")]
-    if not (AUTO_BUY and has_login and candidates):
-        return
-    from ticketbay_buy import order_and_notify
-    l = candidates[0]
-    label = f"{game_label()} {'/'.join(l['sections'])}구역 · 1장 {l['price']:,}원 · {l['text'][:120]}"
-    log(f"자동 주문 시도: {label}")
-    order_and_notify(l["url"], MAX_PRICE, label)
 
 
 def main():
