@@ -135,20 +135,32 @@ class Browser:
         if os.environ.get("CHROMIUM_PATH"):
             launch["executable_path"] = os.environ["CHROMIUM_PATH"]
         self.browser = p.chromium.launch(**launch)
-        state = load_session()
-        # 사용자가 보는 휴대폰 화면과 같게 엽니다.
-        self.context = self.browser.new_context(
-            **p.devices["Pixel 7"], locale="ko-KR", storage_state=state)
-        self.page = self.context.new_page()
+        self.device = p.devices["Pixel 7"]
         self.dialogs = []
+        # 사용자가 보는 휴대폰 화면과 같게 엽니다.
+        self.use_state(load_session())
 
-        def on_dialog(d):
-            self.dialogs.append(d.message)
-            log(f"알림창: {redact(d.message)}")
-            d.accept()
+    def on_dialog(self, d):
+        self.dialogs.append(d.message)
+        log(f"알림창: {redact(d.message)}")
+        d.accept()
 
-        self.context.on("page", lambda pg: pg.on("dialog", on_dialog))
-        self.page.on("dialog", on_dialog)
+    def watch(self, context):
+        context.on("page", lambda pg: pg.on("dialog", self.on_dialog))
+        return context
+
+    def use_state(self, state):
+        """휴대폰 화면 창을 (로그인 상태를 담아) 새로 엽니다."""
+        if getattr(self, "context", None):
+            self.context.close()
+        self.context = self.watch(self.browser.new_context(
+            **self.device, locale="ko-KR", storage_state=state))
+        self.page = self.context.new_page()
+        self.page.on("dialog", self.on_dialog)
+
+    def desktop_context(self):
+        return self.watch(self.browser.new_context(
+            locale="ko-KR", viewport={"width": 1280, "height": 900}))
 
     def latest_page(self):
         self.page = self.context.pages[-1]
@@ -166,8 +178,7 @@ def logged_in(page):
 
 
 def login(b):
-    page = b.page
-    if logged_in(page):
+    if logged_in(b.page):
         log("이미 로그인된 상태입니다.")
         return True
     if not _secret():
@@ -176,26 +187,32 @@ def login(b):
 
     if os.environ.get("TICKETBAY_ID"):
         log("티켓베이 아이디로 로그인합니다.")
+        ctx, page = b.context, b.page
         page.get_by_placeholder("아이디(이메일) 입력").fill(os.environ["TICKETBAY_ID"])
         page.get_by_placeholder("비밀번호 입력").fill(os.environ["TICKETBAY_PASSWORD"])
         page.get_by_role("button", name="로그인", exact=True).click()
     else:
-        log("카카오로 로그인합니다.")
+        # 휴대폰 화면에서는 카카오가 카카오톡 앱을 열려고 해서(서버엔 앱이 없음) 아무 일도 일어나지 않습니다.
+        # 카카오 로그인만 PC 화면으로 하고, 로그인 상태를 휴대폰 화면으로 옮깁니다.
+        log("카카오로 로그인합니다(PC 화면).")
+        ctx = b.desktop_context()
+        page = ctx.new_page()
+        page.on("dialog", b.on_dialog)
+        open_page(page, LOGIN_URL)
         clicked = click_first(page, ["카카오 1초 로그인"])
         # 카카오 로그인은 같은 창으로 넘어가거나 새 창(팝업)으로 열립니다. 모든 창에서 찾습니다.
         kakao = None
         for _ in range(30):
             page.wait_for_timeout(1000)
-            kakao = next((pg for pg in b.context.pages
-                          if not pg.is_closed() and "kakao.com" in pg.url), None)
+            kakao = next((pg for pg in ctx.pages if "kakao.com" in pg.url), None)
             if kakao:
                 break
         if not kakao:
             log(f"카카오 로그인 화면이 열리지 않았습니다. (버튼: {clicked}, 열린 창: "
-                f"{[redact(pg.url) for pg in b.context.pages]})")
+                f"{[redact(pg.url) for pg in ctx.pages]})")
             dump(page, "카카오 버튼 누른 뒤")
             return False
-        b.page = page = kakao
+        page = kakao
         settle(page)
         log(f"카카오 로그인 화면: {redact(page.url.split('?')[0])}")
         page.locator("input[name=loginId], input[type=email], input[type=text]").first.fill(os.environ["KAKAO_ID"])
@@ -206,17 +223,14 @@ def login(b):
     host = urlparse(LOGIN_URL).netloc
     asked = False
     for _ in range(80):
-        b.context.pages[0].wait_for_timeout(3000)
-        page = b.latest_page()
+        (ctx.pages or [b.page])[0].wait_for_timeout(3000)
         # 로그인 창이 닫혔어도 원래 창이 로그인된 페이지로 바뀌었는지 봅니다.
-        if any(host in pg.url and "/member/login" not in pg.url for pg in b.context.pages):
-            break
-        url = page.url
-        if host in url and "/member/login" not in url:
+        if any(host in pg.url and "/member/login" not in pg.url for pg in ctx.pages):
             break
         if any(re.search(r"일치하지|잘못|확인해", d) for d in b.dialogs):
             log("아이디/비밀번호가 맞지 않는다는 알림이 떴습니다.")
             return False
+        page = ctx.pages[-1]
         text = body_text(page)
         if "동의하고 계속하기" in text:
             click_first(page, ["동의하고 계속하기"])
@@ -230,12 +244,14 @@ def login(b):
                            "휴대폰 카카오톡에 온 로그인 요청을 4분 안에 승인해 주세요.")
             except Exception as e:
                 log(f"승인 요청 메일 발송 실패: {e!r}")
-        if re.search(r"비밀번호.*(일치하지|잘못)|아이디.*(확인|존재하지)", text) and "/member/login" in url:
-            break
     else:
-        dump(page, "로그인 대기 시간 초과")
+        dump(ctx.pages[-1], "로그인 대기 시간 초과")
         return False
 
+    if ctx is not b.context:  # PC 화면의 로그인 상태를 휴대폰 화면으로 옮깁니다.
+        state = ctx.storage_state()
+        ctx.close()
+        b.use_state(state)
     ok = logged_in(b.page)
     if ok:
         log("로그인 성공")
