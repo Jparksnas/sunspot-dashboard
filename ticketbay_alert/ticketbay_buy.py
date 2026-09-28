@@ -278,8 +278,22 @@ def ensure_checked(page, text):
         return True
     label.scroll_into_view_if_needed()
     label.click()
-    page.wait_for_timeout(400)
+    page.wait_for_timeout(800)
+    # 첫 동의를 누르면 "구매 전, 꼭 확인하세요! 결제 및 취소 정책 안내" 창이 뜹니다.
+    # 창 안의 두 항목(무통장 취소 1일 1회 제한 / 구매 후 취소 불가)을 체크하고 [확인]을 누르면 동의가 체크됩니다.
+    if state() is not True and "꼭 확인하세요" in body_text(page):
+        log("결제 및 취소 정책 안내 창을 확인합니다.")
+        for t in POLICY_ITEMS:
+            if not ensure_checked(page, t):
+                log(f"안내 창의 '{t}' 체크 실패")
+                return False
+        if not click_first(page, ["확인"], exact=True):
+            return False
+        page.wait_for_timeout(800)
     return state() is not False  # 체크박스를 못 찾으면(null) 한 번 누른 것으로 봅니다.
+
+
+POLICY_ITEMS = ["무통장 취소 1일 1회 제한", "구매 후 취소 불가"]
 
 
 # ---------------- 주문 ----------------
