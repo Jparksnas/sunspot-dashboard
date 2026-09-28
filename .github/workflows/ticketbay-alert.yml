@@ -1,6 +1,7 @@
 # 티켓베이 매물 알림을 GitHub 서버에서 자동으로 실행합니다.
 # 15분마다 예약 실행되고, 한 번 실행되면 28분 동안 1분 간격으로 확인합니다.
 # 실행이 겹치면 대기열에 들어가 끊김 없이 이어집니다.
+# 조건 매물이 새로 나오면(기본: 설명에 '통로') 하루 1건 무통장 가상계좌 발급까지 자동 주문합니다.
 name: 티켓베이 매물 알림
 
 on:
@@ -16,12 +17,23 @@ on:
         description: "테스트용 1장 최대 가격 (예: 90000)"
         required: false
       url:
-        description: "테스트용 티켓베이 목록 주소"
+        description: "테스트용 티켓베이 목록 주소 (order/explore 에서는 상품 주소)"
         required: false
+      action:
+        description: "watch=감시, login=로그인만, explore=화면 탐색(주문 안 함), order=url 상품 주문"
+        type: choice
+        options: [watch, login, explore, order]
+        default: watch
+      clicks:
+        description: "(explore) 차례로 누를 글자, | 로 구분"
+        required: false
+
+env:
+  IS_TEST: ${{ (inputs.sections || inputs.max_price || inputs.url || (inputs.action && inputs.action != 'watch')) && '1' || '' }}
 
 concurrency:
   # 테스트 실행은 실행마다 따로(서로 취소되지 않게), 정규 감시는 하나씩 이어서 실행합니다.
-  group: ticketbay-alert-${{ (inputs.sections || inputs.max_price || inputs.url) && github.run_id || 'watch' }}
+  group: ticketbay-alert-${{ (inputs.sections || inputs.max_price || inputs.url || (inputs.action && inputs.action != 'watch')) && github.run_id || 'watch' }}
   cancel-in-progress: false
 
 permissions:
@@ -48,23 +60,46 @@ jobs:
 
       # 이미 알린 매물 목록(notified.json)을 이전 실행에서 이어받습니다.
       - uses: actions/cache/restore@v4
-        if: ${{ !(inputs.sections || inputs.max_price || inputs.url) }}
+        if: ${{ !env.IS_TEST }}
         with:
           path: ticketbay_alert/notified.json
           key: ticketbay-notified-${{ github.run_id }}
           restore-keys: ticketbay-notified-
+
+      # 로그인 상태(암호화됨)와 오늘 주문 여부를 이어받습니다. 10/5 감시와 같이 씁니다.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ticketbay_alert/session.enc
+            ticketbay_alert/bought.json
+          key: ticketbay-auth-${{ github.run_id }}
+          restore-keys: ticketbay-auth-
 
       - name: 매물 확인
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+          TICKETBAY_ID: ${{ secrets.TICKETBAY_ID }}
+          TICKETBAY_PASSWORD: ${{ secrets.TICKETBAY_PASSWORD }}
+          KAKAO_ID: ${{ secrets.KAKAO_ID }}
+          KAKAO_PASSWORD: ${{ secrets.KAKAO_PASSWORD }}
+          AUTO_BUY: ${{ vars.AUTO_BUY }}
+          AUTO_BUY_AISLE_ONLY: ${{ vars.AUTO_BUY_AISLE_ONLY }}
           TEST_SECTIONS: ${{ inputs.sections }}
           TEST_MAX_PRICE: ${{ inputs.max_price }}
           TEST_URL: ${{ inputs.url }}
+          ACTION: ${{ inputs.action }}
+          CLICKS: ${{ inputs.clicks }}
         run: |
           [ -f ticketbay_alert/notified.json ] || echo "[]" > ticketbay_alert/notified.json
-          if [ -n "$TEST_SECTIONS$TEST_MAX_PRICE$TEST_URL" ]; then
+          if [ "$ACTION" = "login" ] || [ "$ACTION" = "explore" ] || [ "$ACTION" = "order" ]; then
+            args=("$ACTION")
+            [ -n "$TEST_URL" ] && args+=(--url "$TEST_URL")
+            [ -n "$CLICKS" ] && args+=(--clicks "$CLICKS")
+            [ -n "$TEST_MAX_PRICE" ] && args+=(--max-price "$TEST_MAX_PRICE")
+            python ticketbay_alert/ticketbay_buy.py "${args[@]}"
+          elif [ -n "$TEST_SECTIONS$TEST_MAX_PRICE$TEST_URL" ]; then
             args=(--once --dump)
             [ -n "$TEST_SECTIONS" ] && args+=(--sections "$TEST_SECTIONS")
             [ -n "$TEST_MAX_PRICE" ] && args+=(--max-price "$TEST_MAX_PRICE")
@@ -75,12 +110,27 @@ jobs:
           fi
 
       - uses: actions/cache/save@v4
-        if: ${{ always() && !(inputs.sections || inputs.max_price || inputs.url) }}
+        if: ${{ always() && !env.IS_TEST }}
         with:
           path: ticketbay_alert/notified.json
           key: ticketbay-notified-${{ github.run_id }}
 
-      # 마지막으로 확인한 페이지 화면(page.png 등)을 실행 결과에서 받아볼 수 있습니다.
+      - name: 로그인 상태 저장 준비
+        if: always()
+        run: |
+          touch ticketbay_alert/session.enc
+          [ -s ticketbay_alert/bought.json ] || echo "{}" > ticketbay_alert/bought.json
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            ticketbay_alert/session.enc
+            ticketbay_alert/bought.json
+          key: ticketbay-auth-${{ github.run_id }}
+
+      # 마지막으로 확인한 목록 페이지 화면(page.png 등)을 실행 결과에서 받아볼 수 있습니다.
+      # (주문 화면은 개인정보가 있어 저장하지 않습니다)
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -92,7 +142,7 @@ jobs:
       # GitHub 예약 실행은 늦거나 빠질 때가 있어서, 정상적으로 끝나면 다음 감시를 직접 이어 붙입니다.
       # (실패한 실행은 이어 붙이지 않고, 경기 시작 시간이 지나면 멈춥니다)
       - name: 다음 감시 실행 예약
-        if: ${{ success() && !(inputs.sections || inputs.max_price || inputs.url) }}
+        if: ${{ success() && !env.IS_TEST }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
