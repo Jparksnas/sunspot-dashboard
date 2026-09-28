@@ -222,16 +222,18 @@ def login(b):
     # 카카오 추가 인증(카카오톡 승인)이 뜨면 최대 4분 기다립니다.
     host = urlparse(LOGIN_URL).netloc
     asked = False
-    for _ in range(80):
+    for i in range(80):
         (ctx.pages or [b.page])[0].wait_for_timeout(3000)
         # 로그인 창이 닫혔어도 원래 창이 로그인된 페이지로 바뀌었는지 봅니다.
-        if any(host in pg.url and "/member/login" not in pg.url for pg in ctx.pages):
+        if any(urlparse(pg.url).netloc == host and "/member/login" not in pg.url for pg in ctx.pages):
             break
         if any(re.search(r"일치하지|잘못|확인해", d) for d in b.dialogs):
             log("아이디/비밀번호가 맞지 않는다는 알림이 떴습니다.")
             return False
         page = ctx.pages[-1]
         text = body_text(page)
+        if i == 5:  # 15초가 지나도 그대로면 지금 화면을 로그로 남깁니다(개인정보는 가림).
+            dump(page, "카카오 로그인 진행 중")
         if "동의하고 계속하기" in text:
             click_first(page, ["동의하고 계속하기"])
             continue
