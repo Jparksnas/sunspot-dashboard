@@ -234,8 +234,10 @@ def login(b):
         text = body_text(page)
         if i == 5:  # 15초가 지나도 그대로면 지금 화면을 로그로 남깁니다(개인정보는 가림).
             dump(page, "카카오 로그인 진행 중")
-        if "동의하고 계속하기" in text:
-            click_first(page, ["동의하고 계속하기"])
+        # 카카오 승인 후 "해당 카카오계정으로 티켓베이에 로그인합니다 [계속하기]" 화면
+        if "kakao.com" in urlparse(page.url).netloc and click_first(
+                page, ["동의하고 계속하기", "계속하기"], exact=True):
+            log("카카오 '계속하기'를 눌렀습니다.")
             continue
         if not asked and re.search(r"카카오톡.*(확인|인증|승인)|인증번호|2단계", text):
             asked = True
