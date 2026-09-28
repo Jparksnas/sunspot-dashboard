@@ -181,9 +181,23 @@ def login(b):
         page.get_by_role("button", name="로그인", exact=True).click()
     else:
         log("카카오로 로그인합니다.")
-        click_first(page, ["카카오 1초 로그인"])
-        page.wait_for_url(re.compile(r"kakao\.com"), timeout=30000)
+        clicked = click_first(page, ["카카오 1초 로그인"])
+        # 카카오 로그인은 같은 창으로 넘어가거나 새 창(팝업)으로 열립니다. 모든 창에서 찾습니다.
+        kakao = None
+        for _ in range(30):
+            page.wait_for_timeout(1000)
+            kakao = next((pg for pg in b.context.pages
+                          if not pg.is_closed() and "kakao.com" in pg.url), None)
+            if kakao:
+                break
+        if not kakao:
+            log(f"카카오 로그인 화면이 열리지 않았습니다. (버튼: {clicked}, 열린 창: "
+                f"{[redact(pg.url) for pg in b.context.pages]})")
+            dump(page, "카카오 버튼 누른 뒤")
+            return False
+        b.page = page = kakao
         settle(page)
+        log(f"카카오 로그인 화면: {redact(page.url.split('?')[0])}")
         page.locator("input[name=loginId], input[type=email], input[type=text]").first.fill(os.environ["KAKAO_ID"])
         page.locator("input[name=password], input[type=password]").first.fill(os.environ["KAKAO_PASSWORD"])
         click_first(page, ["로그인"], exact=True)
@@ -192,8 +206,11 @@ def login(b):
     host = urlparse(LOGIN_URL).netloc
     asked = False
     for _ in range(80):
-        page.wait_for_timeout(3000)
+        b.context.pages[0].wait_for_timeout(3000)
         page = b.latest_page()
+        # 로그인 창이 닫혔어도 원래 창이 로그인된 페이지로 바뀌었는지 봅니다.
+        if any(host in pg.url and "/member/login" not in pg.url for pg in b.context.pages):
+            break
         url = page.url
         if host in url and "/member/login" not in url:
             break
