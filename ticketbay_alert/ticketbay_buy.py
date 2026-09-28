@@ -99,6 +99,13 @@ def settle(page, ms=1500):
     page.wait_for_timeout(ms)
 
 
+def open_page(page, url):
+    """페이지를 엽니다. 티켓베이 로그인 페이지는 백그라운드 요청이 끝나지 않아
+    'networkidle'을 기다리면 멈추므로, 본문이 뜬 뒤 잠깐만(최대 15초) 기다립니다."""
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    settle(page)
+
+
 # ---------------- 로그인 상태 저장(암호화) ----------------
 def _secret():
     return os.environ.get("TICKETBAY_PASSWORD") or os.environ.get("KAKAO_PASSWORD") or ""
@@ -153,7 +160,7 @@ class Browser:
 
 # ---------------- 로그인 ----------------
 def logged_in(page):
-    page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+    open_page(page, LOGIN_URL)
     # 로그인된 상태면 로그인 페이지에 머물지 않고 다른 곳으로 보내집니다.
     return "/member/login" not in page.url
 
@@ -244,7 +251,7 @@ def issued(text):
 def order(b, url, max_price):
     """상품 페이지 → 구매하기 → 무통장(일반 가상계좌) → 동의 → 다음 → 가상계좌 발급 확인"""
     page = b.page
-    page.goto(url, wait_until="networkidle", timeout=60000)
+    open_page(page, url)
     text = body_text(page)
     unit, total = won(text, "한 매 가격"), won(text, "총 가격")
     log(f"상품 페이지: 1장 {unit}원 · 총 {total}원")
@@ -365,7 +372,7 @@ def main():
         try:
             ok = login(b)
             if args.action == "explore":
-                b.page.goto(args.url, wait_until="networkidle", timeout=60000)
+                open_page(b.page, args.url)
                 dump(b.page, "시작")
                 for i, t in enumerate(x.strip() for x in args.clicks.split("|") if x.strip()):
                     if not click_first(b.page, [t]):
