@@ -265,6 +265,23 @@ def login(b):
     return ok
 
 
+def ensure_checked(page, text):
+    """글자로 찾은 동의 항목(label)의 체크박스가 체크되도록 합니다. 이미 체크돼 있으면 누르지 않습니다."""
+    label = page.locator("label", has_text=text).filter(visible=True)
+    if not label.count():
+        return False
+    label = label.first
+    state = lambda: label.evaluate(
+        "l => { const c = l.control || l.querySelector('input[type=checkbox]');"
+        " return c ? c.checked : null; }")
+    if state() is True:
+        return True
+    label.scroll_into_view_if_needed()
+    label.click()
+    page.wait_for_timeout(400)
+    return state() is not False  # 체크박스를 못 찾으면(null) 한 번 누른 것으로 봅니다.
+
+
 # ---------------- 주문 ----------------
 def bought_today():
     try:
@@ -321,10 +338,9 @@ def order(b, url, max_price):
 
     # 필수 동의 두 개만 체크합니다(입장 안심 서비스는 건드리지 않음).
     for t in ["주문상품 구매조건 확인", "천재지변"]:
-        if not click_first(page, [t]):
-            dump(page, f"동의 항목 '{t}' 없음 - 중단")
+        if not ensure_checked(page, t):
+            dump(page, f"동의 항목 '{t}' 체크 실패 - 중단")
             return None
-        page.wait_for_timeout(400)
 
     text = body_text(page)
     pay = won(text, "총 결제 금액")
