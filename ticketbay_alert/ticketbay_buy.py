@@ -313,11 +313,20 @@ def order(b, url, max_price):
         dump(page, "가격 확인 실패 - 중단")
         return None
 
+    b.dialogs.clear()
     if not click_first(page, ["구매하기"], exact=True):
         dump(page, "구매하기 버튼 없음 - 중단")
         return None
+    # 주문서(/product/payment/...)로 넘어갈 때까지 최대 20초 기다립니다(알림창이 뜨면 바로 멈춤).
+    for _ in range(40):
+        page.wait_for_timeout(500)
+        page = b.latest_page()
+        if "/product/payment" in page.url or "/member/login" in page.url or b.dialogs:
+            break
     settle(page)
-    page = b.latest_page()
+    if any("구매할 수 없" in d for d in b.dialogs):
+        log("이미 팔렸거나 구매할 수 없는 매물입니다.")
+        return None
     if "/member/login" in page.url or any("로그인" in d for d in b.dialogs):
         log("로그인이 풀려 있습니다. 먼저 login 을 다시 실행해야 합니다.")
         return None
