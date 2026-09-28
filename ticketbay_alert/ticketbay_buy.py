@@ -297,6 +297,31 @@ def ensure_checked(page, text):
 
 
 POLICY_ITEMS = ["무통장 취소 1일 1회 제한", "구매 후 취소 불가"]
+VACC_BANK = os.environ.get("VACC_BANK", "KB국민은행")  # 가상계좌를 받을 은행
+VACC_AGREEMENTS = ["전자금융거래 약관 동의", "개인정보 수집 및 이용에 대한 동의", "개인정보 제3자 제공약관 동의"]
+
+
+def fill_vacc_form(page):
+    """도즌 가상계좌 화면: 입금은행을 고르고 필수 약관 3개에 동의합니다."""
+    sel = page.locator("select").filter(visible=True)
+    if sel.count():
+        try:
+            sel.first.select_option(label=VACC_BANK)
+        except Exception:
+            sel.first.select_option(index=1)  # 지정한 은행이 없으면 첫 은행
+        log(f"입금은행 선택: {sel.first.evaluate('s => s.options[s.selectedIndex].text')}")
+    ensure_checked(page, "전체동의")
+    for t in VACC_AGREEMENTS:
+        if not ensure_checked(page, t):
+            log(f"가상계좌 약관 '{t}' 체크 실패")
+            return False
+    # 입력칸 상태만 기록합니다(값은 남기지 않음). 예금주 등 직접 입력이 필요한지 확인용.
+    fields = page.evaluate(
+        "() => Array.from(document.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=hidden])'))"
+        ".filter(e => e.offsetParent !== null)"
+        ".map(e => `${e.name || e.id || e.placeholder || '?'}:${e.value ? '입력됨' : '비어 있음'}${e.readOnly ? '(읽기전용)' : ''}`)")
+    log(f"가상계좌 화면 입력칸: {fields}")
+    return True
 
 
 # ---------------- 주문 ----------------
@@ -389,12 +414,18 @@ def order(b, url, max_price):
         if b.dialogs and any(re.search(r"동의|선택|입력", d) for d in b.dialogs):
             log("필수 항목이 빠졌다는 알림이 떠서 멈춥니다.")
             return None
-        sel = page.locator("select").filter(visible=True)
-        if sel.count():  # 은행 선택 등: 비어 있지 않은 첫 항목
-            try:
-                sel.first.select_option(index=1)
-            except Exception:
-                pass
+        if "은행선택" in text or "dozn.co.kr" in page.url:
+            # 가상계좌 결제대행(도즌) 화면: 입금은행 선택 + 약관 동의 후 결제하기
+            if not fill_vacc_form(page):
+                return None
+            b.dialogs.clear()
+        else:
+            sel = page.locator("select").filter(visible=True)
+            if sel.count():  # 은행 선택 등: 비어 있지 않은 첫 항목
+                try:
+                    sel.first.select_option(index=1)
+                except Exception:
+                    pass
         # 확인 창의 버튼(결제 진행 등)을 먼저 누릅니다. 창 뒤에 가려진 버튼은 누를 수 없습니다.
         if not click_first(page, ["결제 진행", "가상계좌 발급", "발급받기", "결제하기", "주문하기", "확인", "다음"],
                            exact=True):
