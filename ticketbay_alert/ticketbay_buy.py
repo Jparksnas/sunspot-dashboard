@@ -86,7 +86,10 @@ def click_first(page, texts, exact=False):
             loc = loc.filter(visible=True)
             if loc.count():
                 loc.first.scroll_into_view_if_needed()
-                loc.first.click()
+                try:
+                    loc.first.click(timeout=5000)
+                except Exception:  # 확인 창 등에 가려져 누를 수 없으면 다음 후보로 넘어갑니다.
+                    continue
                 return t
     return None
 
@@ -376,7 +379,7 @@ def order(b, url, max_price):
     click_first(page, ["다음"], exact=True)
 
     # '다음' 이후: 가상계좌 발급 화면이 나올 때까지 확인 버튼만 따라갑니다.
-    for step in range(5):
+    for step in range(8):
         settle(page, 2500)
         page = b.latest_page()
         text = body_text(page)
@@ -392,7 +395,9 @@ def order(b, url, max_price):
                 sel.first.select_option(index=1)
             except Exception:
                 pass
-        if not click_first(page, ["가상계좌 발급", "발급받기", "결제하기", "주문하기", "확인", "다음"], exact=True):
+        # 확인 창의 버튼(결제 진행 등)을 먼저 누릅니다. 창 뒤에 가려진 버튼은 누를 수 없습니다.
+        if not click_first(page, ["결제 진행", "가상계좌 발급", "발급받기", "결제하기", "주문하기", "확인", "다음"],
+                           exact=True):
             break
     dump(b.latest_page(), "가상계좌 화면을 찾지 못함")
     return None
