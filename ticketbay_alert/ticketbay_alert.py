@@ -38,7 +38,7 @@ def game_url(game):
 GAME = datetime(2026, 10, 3, 14, 0, tzinfo=KST)  # 경기 일시. 시작 후에는 자동 종료
 TARGET_URL = os.environ.get("TICKETBAY_URL") or game_url(GAME)
 TARGET_SECTIONS = {"401", "402", "403"}
-MAX_PRICE = 20000                         # 1장 기준 최대 가격(원)
+MAX_PRICE = int(os.environ.get("MAX_PRICE") or 20000)  # 1장 기준 최대 가격(원). 워크플로 env 로 경기별 변경
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "notified.json"
