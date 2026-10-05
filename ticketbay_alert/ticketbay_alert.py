@@ -23,6 +23,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 KST = timezone(timedelta(hours=9))
+SEAT_GRADE_ALL = os.environ.get("SEAT_GRADE", "").upper() == "ALL"
 WEEKDAYS = "월화수목금토일"
 
 
@@ -30,15 +31,20 @@ def game_url(game):
     return (
         "https://www.ticketbay.co.kr/product/6549/list/0"
         f"?start_perform_date={game:%Y-%m-%d+%H}%3A{game:%M}%3A00"
-        "&seat_grade=%EC%99%B8%EC%95%BC+%EA%B7%B8%EB%A6%B0%EC%84%9D"
-        "&sale_quantity=4&is_together=YES"
+        + ("" if SEAT_GRADE_ALL else "&seat_grade=%EC%99%B8%EC%95%BC+%EA%B7%B8%EB%A6%B0%EC%84%9D")
+        + "&sale_quantity=4&is_together=YES"
     )
 
 
 GAME = datetime(2026, 10, 3, 14, 0, tzinfo=KST)  # 경기 일시. 시작 후에는 자동 종료
 TARGET_URL = os.environ.get("TICKETBAY_URL") or game_url(GAME)
-TARGET_SECTIONS = {"401", "402", "403"}
-MAX_PRICE = int(os.environ.get("MAX_PRICE") or 20000)  # 1장 기준 최대 가격(원). 워크플로 env 로 경기별 변경
+# 워크플로 env 로 경기별 조건을 바꿀 수 있습니다.
+#   SECTIONS=ALL     → 구역 상관없이     SEAT_GRADE=ALL → 좌석 등급 상관없이(기본: 외야 그린석)
+#   MAX_PRICE=0      → 가격 상관없이     NOTIFY_SINCE=2026-10-05T11:10 → 이 시각 이후 등록된 매물만 알림
+_sections = os.environ.get("SECTIONS", "401,402,403")
+TARGET_SECTIONS = None if _sections.upper() == "ALL" else {x.strip() for x in _sections.split(",") if x.strip()}
+MAX_PRICE = int(os.environ.get("MAX_PRICE") or 20000)  # 1장 기준 최대 가격(원), 0이면 제한 없음
+NOTIFY_SINCE = os.environ.get("NOTIFY_SINCE", "")
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "notified.json"
@@ -69,7 +75,7 @@ def find_sections(text):
     if explicit:
         return sorted(explicit)
     # "구역" 표기가 없으면 감시 대상 구역 번호만 인정합니다(날짜·가격 숫자 오인 방지).
-    return sorted(set(BARE_NUM_RE.findall(text)) & TARGET_SECTIONS)
+    return sorted(set(BARE_NUM_RE.findall(text)) & (TARGET_SECTIONS or set()))
 
 
 AISLE_WORD = "통로"
@@ -151,6 +157,7 @@ def parse_json_listings(obj):
                 )[:300] or seat_text[:300],
                 "detail": seat_text,  # '통로' 확인용 전체 글자
                 "id": ident,
+                "created": next((str(v) for k, v in pairs if k == "created_at"), ""),
                 "url": listing_url(pairs),
             })
             return  # 이 객체 안쪽은 다시 보지 않음
@@ -163,7 +170,17 @@ def parse_json_listings(obj):
 
 
 def is_match(listing):
-    return bool(TARGET_SECTIONS & set(listing["sections"])) and listing["price"] <= MAX_PRICE
+    if NOTIFY_SINCE and listing.get("created") and listing["created"] < NOTIFY_SINCE:
+        return False  # 감시 조건을 바꾼 시각 전에 올라온 매물
+    section_ok = TARGET_SECTIONS is None or bool(TARGET_SECTIONS & set(listing["sections"]))
+    return section_ok and (MAX_PRICE <= 0 or listing["price"] <= MAX_PRICE)
+
+
+def condition_label():
+    sec = "전체 구역" if TARGET_SECTIONS is None else "구역 " + ", ".join(sorted(TARGET_SECTIONS))
+    price = "가격 무관" if MAX_PRICE <= 0 else f"1장 {MAX_PRICE:,}원 이하"
+    since = f" · {NOTIFY_SINCE.replace('T', ' ')} 이후 등록" if NOTIFY_SINCE else ""
+    return f"{sec} · {price}{since}"
 
 
 def listing_key(listing):
@@ -326,8 +343,8 @@ def check_once(dump=False, test=False):
     body = (
         top
         + ("[테스트 실행] " if test else "")
-        + f"{game_label()} 외야 그린석 4연석 조건에 맞는 매물이 올라왔습니다.\n"
-        f"(구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하)\n\n"
+        + f"{game_label()} {'' if SEAT_GRADE_ALL else '외야 그린석 '}4연석 조건에 맞는 매물이 올라왔습니다.\n"
+        f"({condition_label()})\n\n"
         + "\n\n".join(line(l) for l in new)
         + f"\n\n목록 바로가기: {TARGET_URL}\n"
     )
@@ -369,7 +386,7 @@ def main():
         MAX_PRICE = args.max_price
     if args.url:
         TARGET_URL = args.url
-    log(f"경기: {game_label()} · 조건: 구역 {', '.join(sorted(TARGET_SECTIONS))} · 1장 {MAX_PRICE:,}원 이하"
+    log(f"경기: {game_label()} · 조건: {condition_label()}"
         + (" (테스트 실행)" if test else ""))
 
     if args.test_email:
